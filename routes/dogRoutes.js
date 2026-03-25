@@ -63,8 +63,8 @@ router.post("/add", auth, isAuthorized, async (req, res) => {
     await dog.save();
 
     const qr = await QRCode.toDataURL(
-      `http://localhost:5173/dog/${dog._id}`
-    );
+  `https://pawtrack-frontend.vercel.app/dog/${dog._id}`
+);
 
     dog.qrCode = qr;
     await dog.save();
