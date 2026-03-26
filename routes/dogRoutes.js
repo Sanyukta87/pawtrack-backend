@@ -57,7 +57,7 @@ router.get("/", async (req, res) => {
 
 
 // 🟢 2. ADD DOG (ADMIN ONLY)
-router.post("/add", auth, isAuthorized, async (req, res) => {
+router.post("/", auth, isAuthorized, async (req, res) => { 
   try {
     const dog = new Dog(req.body);
     await dog.save();
