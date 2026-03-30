@@ -1,35 +1,57 @@
-require("dotenv").config(); // ✅ MUST BE FIRST
+require("dotenv").config();
 
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 
-// 🔐 Routes
 const authRoutes = require("./routes/authRoutes");
 const dogRoutes = require("./routes/dogRoutes");
+const reportRoutes = require("./routes/reportRoutes");
 
 const app = express();
 
-// ✅ MIDDLEWARE (ORDER MATTERS)
-app.use(cors()); // 🔥 enable CORS
+// ✅ ENV VARIABLES
+const PORT = process.env.PORT || 5000;
+const MONGO_URI = process.env.MONGO_URI;
+const CLIENT_URL = process.env.CLIENT_URL;
+
+// ❌ STOP if MONGO_URI missing (GOOD PRACTICE)
+if (!MONGO_URI) {
+  console.error("❌ Missing MONGO_URI in .env");
+  process.exit(1);
+}
+
+// ✅ MIDDLEWARES
+app.use(
+  cors({
+    origin: CLIENT_URL || "*", // allow frontend OR fallback
+    credentials: true,
+  })
+);
+
 app.use(express.json());
 
-// 🧪 Test route
+// ✅ TEST ROUTE
 app.get("/", (req, res) => {
-  res.send("PawTrack API running 🚀");
+  res.send("🚀 PawTrack API running");
 });
 
-// 🔗 API ROUTES
+// ✅ ROUTES
 app.use("/api/auth", authRoutes);
 app.use("/api/dogs", dogRoutes);
+app.use("/api/reports", reportRoutes);
 
-// 🚀 CONNECT DB + START SERVER
-mongoose.connect(process.env.MONGO_URI)
+// ✅ DATABASE CONNECTION + SERVER START
+mongoose
+  .connect(MONGO_URI)
   .then(() => {
-    console.log("MongoDB Connected");
+    console.log("✅ MongoDB Connected");
 
-    app.listen(5000, () => {
-      console.log("Server running on port 5000");
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
     });
   })
-  .catch((err) => console.log(err));
+  .catch((err) => {
+    console.error("❌ MongoDB connection error:", err);
+    process.exit(1);
+  });
