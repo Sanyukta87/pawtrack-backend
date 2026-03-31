@@ -2,17 +2,32 @@ const mongoose = require("mongoose");
 
 // 🏥 Health Record Schema
 const healthRecordSchema = new mongoose.Schema({
-  vaccinationDate: Date,
-  nextDueDate: Date,
-  treatment: {
-    type: String,
-    required: true,
-  },
-  notes: String,
   type: {
     type: String,
     enum: ["vaccination", "treatment"],
     default: "treatment",
+  },
+  vaccinationDate: {
+    type: Date,
+    validate: {
+      validator(value) {
+        if (this.type === "vaccination") {
+          return value instanceof Date && !Number.isNaN(value.getTime());
+        }
+
+        return true;
+      },
+      message: "vaccinationDate is required for vaccination records",
+    },
+  },
+  nextDueDate: Date,
+  treatment: {
+    type: String,
+    trim: true,
+  },
+  notes: {
+    type: String,
+    trim: true,
   },
   createdAt: {
     type: Date,
@@ -23,6 +38,13 @@ const healthRecordSchema = new mongoose.Schema({
 // 🐶 Dog Schema
 const dogSchema = new mongoose.Schema(
   {
+    dogId: {
+      type: String,
+      unique: true,
+      required: true,
+      trim: true,
+    },
+
     name: {
       type: String,
       required: true,
@@ -67,7 +89,10 @@ const dogSchema = new mongoose.Schema(
     qrCode: String,
 
     // 🏥 Health Records
-    healthRecords: [healthRecordSchema],
+    healthRecords: {
+      type: [healthRecordSchema],
+      default: [],
+    },
 
     // 🚨 Reports
     reports: [

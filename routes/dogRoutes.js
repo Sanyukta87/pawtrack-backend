@@ -2,24 +2,133 @@ const express = require("express");
 const mongoose = require("mongoose");
 const QRCode = require("qrcode");
 
+const Counter = require("../models/Counter");
 const Dog = require("../models/Dog");
 const { auth, isAuthorized } = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
 const getFrontendBaseUrl = () =>
-  process.env.FRONTEND_URL || "https://pawtrack-frontend.vercel.app";
+  process.env.FRONTEND_URL || "http://localhost:5173";
 
 const buildDogUrl = (dogId) => `${getFrontendBaseUrl()}/dog/${dogId}`;
 
-const ensureQrCode = async (dog) => {
-  if (dog.qrCode) {
-    return dog;
+const VACCINATION_DUE_SOON_DAYS = 7;
+const MAX_DOG_ID_RETRIES = 200;
+
+const isValidDate = (value) => {
+  if (!value) {
+    return false;
   }
 
-  dog.qrCode = await QRCode.toDataURL(buildDogUrl(dog._id));
-  await dog.save();
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime());
+};
+
+const calculateNextDueDate = (vaccinationDate) => {
+  const nextDueDate = new Date(vaccinationDate);
+  nextDueDate.setMonth(nextDueDate.getMonth() + 12);
+  return nextDueDate;
+};
+
+const getVaccinationStatus = (dog, today = new Date()) => {
+  if (!dog.nextVaccinationDate) {
+    return "safe";
+  }
+
+  const diff =
+    (new Date(dog.nextVaccinationDate) - today) / (1000 * 60 * 60 * 24);
+
+  if (diff < 0) {
+    return "overdue";
+  }
+
+  if (diff <= VACCINATION_DUE_SOON_DAYS) {
+    return "dueSoon";
+  }
+
+  return "safe";
+};
+
+const getDogAlert = (dog, today = new Date()) => {
+  if (dog.reports.length > 0) {
+    return {
+      alertStatus: "attention",
+      alertMessage: "Dog needs attention",
+    };
+  }
+
+  const vaccinationStatus = getVaccinationStatus(dog, today);
+
+  if (vaccinationStatus === "overdue") {
+    return {
+      alertStatus: "overdue",
+      alertMessage: "Vaccination overdue",
+    };
+  }
+
+  if (vaccinationStatus === "dueSoon") {
+    return {
+      alertStatus: "dueSoon",
+      alertMessage: "Vaccination due soon",
+    };
+  }
+
+  return {
+    alertStatus: "none",
+    alertMessage: "",
+  };
+};
+
+const createUniqueDogId = async () => {
+  for (let attempt = 0; attempt < MAX_DOG_ID_RETRIES; attempt += 1) {
+    const counter = await Counter.findOneAndUpdate(
+      { name: "dogId" },
+      { $inc: { seq: 1 } },
+      {
+        new: true,
+        upsert: true,
+        setDefaultsOnInsert: true,
+      }
+    );
+
+    const dogId = `DOG-${String(counter.seq).padStart(3, "0")}`;
+    const existingDog = await Dog.exists({ dogId });
+
+    if (!existingDog) {
+      return dogId;
+    }
+  }
+
+  throw new Error("Unable to generate a unique dogId");
+};
+
+const ensureDogIdentity = async (dog) => {
+  let shouldSave = false;
+  let shouldRefreshQrCode = false;
+
+  if (!dog.dogId) {
+    dog.dogId = await createUniqueDogId();
+    shouldSave = true;
+    shouldRefreshQrCode = true;
+  }
+
+  const expectedQrCodeUrl = buildDogUrl(dog.dogId);
+
+  if (!dog.qrCode || shouldRefreshQrCode) {
+    dog.qrCode = await QRCode.toDataURL(expectedQrCodeUrl);
+    shouldSave = true;
+  }
+
+  if (shouldSave) {
+    await dog.save();
+  }
+
   return dog;
+};
+
+const ensureQrCode = async (dog) => {
+  return ensureDogIdentity(dog);
 };
 
 router.get("/", async (req, res) => {
@@ -28,32 +137,10 @@ router.get("/", async (req, res) => {
     const today = new Date();
     const dogsWithQrCodes = await Promise.all(dogs.map(ensureQrCode));
 
-    const dogsWithAlerts = dogsWithQrCodes.map((dog) => {
-      let alertStatus = "none";
-      let alertMessage = "";
-
-      if (dog.reports.length > 0) {
-        alertStatus = "attention";
-        alertMessage = "Dog needs attention";
-      } else if (dog.nextVaccinationDate) {
-        const nextDate = new Date(dog.nextVaccinationDate);
-        const diff = (nextDate - today) / (1000 * 60 * 60 * 24);
-
-        if (diff < 0) {
-          alertStatus = "overdue";
-          alertMessage = "Vaccination overdue";
-        } else if (diff <= 3) {
-          alertStatus = "dueSoon";
-          alertMessage = "Vaccination due soon";
-        }
-      }
-
-      return {
-        ...dog._doc,
-        alertStatus,
-        alertMessage,
-      };
-    });
+    const dogsWithAlerts = dogsWithQrCodes.map((dog) => ({
+      ...dog._doc,
+      ...getDogAlert(dog, today),
+    }));
 
     res.json(dogsWithAlerts);
   } catch (err) {
@@ -64,10 +151,13 @@ router.get("/", async (req, res) => {
 
 router.post("/", auth, isAuthorized, async (req, res) => {
   try {
-    const dog = new Dog(req.body);
+    const dog = new Dog({
+      ...req.body,
+      dogId: await createUniqueDogId(),
+    });
     await dog.save();
 
-    dog.qrCode = await QRCode.toDataURL(buildDogUrl(dog._id));
+    dog.qrCode = await QRCode.toDataURL(buildDogUrl(dog.dogId));
     await dog.save();
 
     res.json(dog);
@@ -129,7 +219,10 @@ router.post("/report/:id", async (req, res) => {
 
 router.post("/health/:id", auth, isAuthorized, async (req, res) => {
   try {
-    const { vaccinationDate, treatment, notes, type } = req.body;
+    const type = req.body.type === "vaccination" ? "vaccination" : "treatment";
+    const treatment = req.body.treatment?.trim() || "";
+    const notes = req.body.notes?.trim() || "";
+    const vaccinationDateInput = req.body.vaccinationDate;
 
     const dog = await Dog.findById(req.params.id);
     if (!dog) {
@@ -137,22 +230,40 @@ router.post("/health/:id", auth, isAuthorized, async (req, res) => {
     }
 
     let nextDueDate = null;
+    let vaccinationDate = null;
 
-    if (type === "vaccination" && vaccinationDate) {
-      nextDueDate = new Date(vaccinationDate);
-      nextDueDate.setMonth(nextDueDate.getMonth() + 12);
+    if (type === "vaccination") {
+      if (!isValidDate(vaccinationDateInput)) {
+        return res
+          .status(400)
+          .json({ msg: "Valid vaccinationDate is required for vaccinations" });
+      }
 
-      dog.lastVaccinationDate = vaccinationDate;
-      dog.nextVaccinationDate = nextDueDate;
+      vaccinationDate = new Date(vaccinationDateInput);
+      nextDueDate = calculateNextDueDate(vaccinationDate);
+
+      const shouldUpdateSummaryDates =
+        !dog.lastVaccinationDate ||
+        vaccinationDate >= new Date(dog.lastVaccinationDate);
+
+      if (shouldUpdateSummaryDates) {
+        dog.lastVaccinationDate = vaccinationDate;
+        dog.nextVaccinationDate = nextDueDate;
+      }
+
       dog.vaccinated = true;
+    } else if (!treatment && !notes) {
+      return res.status(400).json({
+        msg: "Treatment records require at least a treatment name or notes",
+      });
     }
 
     dog.healthRecords.push({
+      type,
       vaccinationDate,
       nextDueDate,
-      treatment,
-      notes,
-      type,
+      treatment: treatment || undefined,
+      notes: notes || undefined,
     });
 
     await dog.save();
@@ -168,32 +279,16 @@ router.get("/alerts", async (req, res) => {
   try {
     const dogs = await Dog.find();
     const today = new Date();
+    await Promise.all(dogs.map(ensureDogIdentity));
 
     const alerts = dogs.map((dog) => {
-      let status = "safe";
-      let message = "";
-
-      if (dog.reports.length > 0) {
-        status = "attention";
-        message = "Dog needs attention";
-      } else if (dog.nextVaccinationDate) {
-        const diff =
-          (new Date(dog.nextVaccinationDate) - today) / (1000 * 60 * 60 * 24);
-
-        if (diff < 0) {
-          status = "overdue";
-          message = "Vaccination overdue";
-        } else if (diff <= 3) {
-          status = "dueSoon";
-          message = "Vaccination due soon";
-        }
-      }
-
+      const { alertStatus, alertMessage } = getDogAlert(dog, today);
       return {
-        dogId: dog._id,
+        dogId: dog.dogId,
+        mongoId: dog._id,
         name: dog.name,
-        status,
-        message,
+        status: alertStatus === "none" ? "safe" : alertStatus,
+        message: alertMessage,
         nextVaccinationDate: dog.nextVaccinationDate,
       };
     });
@@ -209,36 +304,59 @@ router.get("/stats", async (req, res) => {
     const dogs = await Dog.find();
     const today = new Date();
 
-    let total = dogs.length;
-    let vaccinated = 0;
-    let overdue = 0;
-    let dueSoon = 0;
-    let attention = 0;
+    const stats = dogs.reduce(
+      (accumulator, dog) => {
+        accumulator.totalDogs += 1;
 
-    dogs.forEach((dog) => {
-      if (dog.vaccinated) {
-        vaccinated++;
-      }
-
-      if (dog.reports.length > 0) {
-        attention++;
-      }
-
-      if (dog.nextVaccinationDate) {
-        const diff =
-          (new Date(dog.nextVaccinationDate) - today) / (1000 * 60 * 60 * 24);
-
-        if (diff < 0) {
-          overdue++;
-        } else if (diff <= 3) {
-          dueSoon++;
+        if (dog.vaccinated) {
+          accumulator.vaccinatedCount += 1;
         }
-      }
-    });
 
-    res.json({ total, vaccinated, overdue, dueSoon, attention });
+        accumulator.activeReports += dog.reports.length;
+
+        const vaccinationStatus = getVaccinationStatus(dog, today);
+
+        if (vaccinationStatus === "overdue") {
+          accumulator.overdueVaccinations += 1;
+        } else if (vaccinationStatus === "dueSoon") {
+          accumulator.dueSoonVaccinations += 1;
+        } else {
+          accumulator.safeVaccinations += 1;
+        }
+
+        return accumulator;
+      },
+      {
+        totalDogs: 0,
+        vaccinatedCount: 0,
+        overdueVaccinations: 0,
+        dueSoonVaccinations: 0,
+        safeVaccinations: 0,
+        activeReports: 0,
+      }
+    );
+
+    res.json(stats);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ msg: "Error fetching stats" });
+  }
+});
+
+router.get("/dogid/:dogId", async (req, res) => {
+  try {
+    const dog = await Dog.findOne({ dogId: req.params.dogId?.trim().toUpperCase() });
+
+    if (!dog) {
+      return res.status(404).json({ msg: "Dog not found" });
+    }
+
+    await ensureDogIdentity(dog);
+
+    res.json(dog);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ msg: "Error fetching dog" });
   }
 });
 
