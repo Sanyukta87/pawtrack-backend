@@ -1,6 +1,5 @@
 const mongoose = require("mongoose");
 
-// 🏥 Health Record Schema
 const healthRecordSchema = new mongoose.Schema({
   type: {
     type: String,
@@ -35,7 +34,6 @@ const healthRecordSchema = new mongoose.Schema({
   },
 });
 
-// 🐶 Dog Schema
 const dogSchema = new mongoose.Schema(
   {
     dogId: {
@@ -44,57 +42,45 @@ const dogSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
-
     name: {
       type: String,
       required: true,
     },
-
     location: String,
     color: String,
     gender: String,
-
     vaccinated: {
       type: Boolean,
       default: false,
     },
-
     sterilized: {
       type: Boolean,
       default: false,
     },
-
     earNotch: {
       type: Boolean,
       default: false,
     },
-
-    // 📅 Vaccination Tracking
     lastVaccinationDate: Date,
     nextVaccinationDate: Date,
-
-    // 🧠 Alert System
     alertStatus: {
       type: String,
       enum: ["none", "dueSoon", "overdue", "attention"],
       default: "none",
     },
-
     alertMessage: String,
-
-    // 📝 Notes
     notes: String,
-
-    // 🔗 QR Code
+    lastSeen: {
+      placeName: String,
+      latitude: Number,
+      longitude: Number,
+      timestamp: Date,
+    },
     qrCode: String,
-
-    // 🏥 Health Records
     healthRecords: {
       type: [healthRecordSchema],
       default: [],
     },
-
-    // 🚨 Reports
     reports: [
       {
         message: {

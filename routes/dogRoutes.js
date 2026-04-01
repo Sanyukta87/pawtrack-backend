@@ -4,7 +4,11 @@ const QRCode = require("qrcode");
 
 const Counter = require("../models/Counter");
 const Dog = require("../models/Dog");
-const { auth, isAuthorized } = require("../middleware/authMiddleware");
+const {
+  auth,
+  authorizeRoles,
+  isAuthorized,
+} = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
@@ -12,9 +16,24 @@ const getFrontendBaseUrl = () =>
   process.env.FRONTEND_URL || "http://localhost:5173";
 
 const buildDogUrl = (dogId) => `${getFrontendBaseUrl()}/dog/${dogId}`;
+const buildLookupUrl = (dogId = "") => {
+  const lookupUrl = `${getFrontendBaseUrl()}/lookup`;
+
+  if (!dogId) {
+    return lookupUrl;
+  }
+
+  return `${lookupUrl}?dogId=${encodeURIComponent(dogId)}`;
+};
 
 const VACCINATION_DUE_SOON_DAYS = 7;
 const MAX_DOG_ID_RETRIES = 200;
+
+const isValidLatitude = (value) =>
+  Number.isFinite(value) && value >= -90 && value <= 90;
+
+const isValidLongitude = (value) =>
+  Number.isFinite(value) && value >= -180 && value <= 180;
 
 const isValidDate = (value) => {
   if (!value) {
@@ -131,7 +150,7 @@ const ensureQrCode = async (dog) => {
   return ensureDogIdentity(dog);
 };
 
-router.get("/", async (req, res) => {
+router.get("/", auth, authorizeRoles("admin", "vet"), async (req, res) => {
   try {
     const dogs = await Dog.find();
     const today = new Date();
@@ -275,7 +294,7 @@ router.post("/health/:id", auth, isAuthorized, async (req, res) => {
   }
 });
 
-router.get("/alerts", async (req, res) => {
+router.get("/alerts", auth, authorizeRoles("admin", "vet"), async (req, res) => {
   try {
     const dogs = await Dog.find();
     const today = new Date();
@@ -299,7 +318,7 @@ router.get("/alerts", async (req, res) => {
   }
 });
 
-router.get("/stats", async (req, res) => {
+router.get("/stats", auth, authorizeRoles("admin", "vet"), async (req, res) => {
   try {
     const dogs = await Dog.find();
     const today = new Date();
@@ -343,7 +362,99 @@ router.get("/stats", async (req, res) => {
   }
 });
 
-router.get("/dogid/:dogId", async (req, res) => {
+router.post("/last-seen", async (req, res) => {
+  try {
+    const normalizedDogId = req.body.dogId?.trim().toUpperCase();
+    const placeName = req.body.placeName?.trim();
+    const latitude = Number(req.body.latitude);
+    const longitude = Number(req.body.longitude);
+    const timestamp = new Date(req.body.timestamp);
+
+    if (
+      !normalizedDogId ||
+      !placeName ||
+      !isValidLatitude(latitude) ||
+      !isValidLongitude(longitude)
+    ) {
+      return res.status(400).json({ msg: "Invalid last seen payload" });
+    }
+
+    if (Number.isNaN(timestamp.getTime())) {
+      return res.status(400).json({ msg: "Invalid timestamp" });
+    }
+
+    const dog = await Dog.findOne({ dogId: normalizedDogId });
+
+    if (!dog) {
+      return res.status(404).json({ msg: "Dog not found" });
+    }
+
+    dog.lastSeen = {
+      placeName,
+      latitude,
+      longitude,
+      timestamp,
+    };
+
+    await dog.save();
+
+    res.json({ msg: "Last seen updated" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ msg: "Error updating last seen" });
+  }
+});
+
+router.get("/lookup-qr", async (req, res) => {
+  try {
+    const lookupUrl = buildLookupUrl();
+    const qrCode = await QRCode.toDataURL(lookupUrl);
+
+    res.json({
+      lookupUrl,
+      qrCode,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ msg: "Error generating lookup QR" });
+  }
+});
+
+router.get("/public/:dogId", async (req, res) => {
+  try {
+    const dog = await Dog.findOne({ dogId: req.params.dogId?.trim().toUpperCase() });
+
+    if (!dog) {
+      return res.status(404).json({ msg: "Dog not found" });
+    }
+
+    const vaccinationStatus = getVaccinationStatus(dog);
+    const vaccinationStatusLabel =
+      vaccinationStatus === "overdue"
+        ? "Overdue"
+        : vaccinationStatus === "dueSoon"
+          ? "Due Soon"
+          : dog.vaccinated
+            ? "Vaccinated"
+            : "Status not available";
+
+    res.json({
+      dogId: dog.dogId,
+      name: dog.name,
+      location: dog.location,
+      notes: dog.notes,
+      vaccinated: dog.vaccinated,
+      vaccinationStatus,
+      vaccinationStatusLabel,
+      lookupUrl: buildLookupUrl(dog.dogId),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ msg: "Error fetching dog" });
+  }
+});
+
+router.get("/dogid/:dogId", auth, authorizeRoles("admin", "vet"), async (req, res) => {
   try {
     const dog = await Dog.findOne({ dogId: req.params.dogId?.trim().toUpperCase() });
 
@@ -360,7 +471,7 @@ router.get("/dogid/:dogId", async (req, res) => {
   }
 });
 
-router.get("/:id", async (req, res) => {
+router.get("/:id", auth, authorizeRoles("admin", "vet"), async (req, res) => {
   try {
     const { id } = req.params;
 

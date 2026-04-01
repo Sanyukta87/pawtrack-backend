@@ -3,22 +3,18 @@ const jwt = require("jsonwebtoken");
 const auth = (req, res, next) => {
   const authHeader = req.header("Authorization");
 
-  // ❌ No token
   if (!authHeader) {
     return res.status(401).json({ msg: "No token, authorization denied" });
   }
 
-  // ✅ Extract token
-  const token = authHeader.split(" ")[1];
+  const [scheme, token] = authHeader.split(" ");
 
-  if (!token) {
+  if (scheme !== "Bearer" || !token) {
     return res.status(401).json({ msg: "Invalid token format" });
   }
 
   try {
-    // ✅ VERIFY USING ENV SECRET (CORRECT)
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
     req.user = decoded;
     next();
   } catch (err) {
@@ -26,13 +22,14 @@ const auth = (req, res, next) => {
   }
 };
 
-// ✅ ROLE CHECK
-const isAuthorized = (req, res, next) => {
-  if (!req.user || req.user.role !== "admin") {
-    return res.status(403).json({ msg: "Access denied: Admins only" });
+const authorizeRoles = (...roles) => (req, res, next) => {
+  if (!req.user || !roles.includes(req.user.role)) {
+    return res.status(403).json({ msg: "Access denied" });
   }
 
   next();
 };
 
-module.exports = { auth, isAuthorized };
+const isAuthorized = authorizeRoles("admin");
+
+module.exports = { auth, authorizeRoles, isAuthorized };
