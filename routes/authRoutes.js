@@ -6,12 +6,21 @@ const User = require("../models/User");
 
 const router = express.Router();
 
-// ✅ SIGNUP
 router.post("/signup", async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
+    const allowedRoles = ["admin", "volunteer", "vet"];
 
-    // 🔒 check if user already exists
+    if (!name || !email || !password) {
+      return res
+        .status(400)
+        .json({ msg: "Name, email, and password are required" });
+    }
+
+    if (role && !allowedRoles.includes(role)) {
+      return res.status(400).json({ msg: "Invalid role selected" });
+    }
+
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ msg: "User already exists" });
@@ -23,7 +32,7 @@ router.post("/signup", async (req, res) => {
       name,
       email,
       password: hashed,
-      role,
+      role: role || "volunteer",
     });
 
     await user.save();
@@ -35,7 +44,6 @@ router.post("/signup", async (req, res) => {
   }
 });
 
-// ✅ LOGIN
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -52,7 +60,6 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ msg: "Wrong password" });
     }
 
-    // 🔐 JWT TOKEN (CORRECT)
     const token = jwt.sign(
       { id: user._id, role: user.role },
       process.env.JWT_SECRET,
