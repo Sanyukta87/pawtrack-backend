@@ -11,20 +11,12 @@ const {
 } = require("../middleware/authMiddleware");
 
 const router = express.Router();
+const QR_CODE_VERSION = 2;
 
 const getFrontendBaseUrl = () =>
-  process.env.FRONTEND_URL || "http://localhost:5173";
+  process.env.FRONTEND_URL || "https://pawtrack-frontend.vercel.app";
 
-const buildDogUrl = (dogId) => `${getFrontendBaseUrl()}/dog/${dogId}`;
-const buildLookupUrl = (dogId = "") => {
-  const lookupUrl = `${getFrontendBaseUrl()}/lookup`;
-
-  if (!dogId) {
-    return lookupUrl;
-  }
-
-  return `${lookupUrl}?dogId=${encodeURIComponent(dogId)}`;
-};
+const buildLookupUrl = () => `${getFrontendBaseUrl()}/lookup`;
 
 const VACCINATION_DUE_SOON_DAYS = 7;
 const MAX_DOG_ID_RETRIES = 200;
@@ -124,18 +116,15 @@ const createUniqueDogId = async () => {
 
 const ensureDogIdentity = async (dog) => {
   let shouldSave = false;
-  let shouldRefreshQrCode = false;
 
   if (!dog.dogId) {
     dog.dogId = await createUniqueDogId();
     shouldSave = true;
-    shouldRefreshQrCode = true;
   }
 
-  const expectedQrCodeUrl = buildDogUrl(dog.dogId);
-
-  if (!dog.qrCode || shouldRefreshQrCode) {
-    dog.qrCode = await QRCode.toDataURL(expectedQrCodeUrl);
+  if (!dog.qrCode || dog.qrCodeVersion !== QR_CODE_VERSION) {
+    dog.qrCode = await QRCode.toDataURL(buildLookupUrl());
+    dog.qrCodeVersion = QR_CODE_VERSION;
     shouldSave = true;
   }
 
@@ -173,10 +162,12 @@ router.post("/", auth, isAuthorized, async (req, res) => {
     const dog = new Dog({
       ...req.body,
       dogId: await createUniqueDogId(),
+      qrCodeVersion: QR_CODE_VERSION,
     });
     await dog.save();
 
-    dog.qrCode = await QRCode.toDataURL(buildDogUrl(dog.dogId));
+    dog.qrCode = await QRCode.toDataURL(buildLookupUrl());
+    dog.qrCodeVersion = QR_CODE_VERSION;
     await dog.save();
 
     res.json(dog);
@@ -422,7 +413,9 @@ router.get("/lookup-qr", async (req, res) => {
 
 router.get("/public/:dogId", async (req, res) => {
   try {
-    const dog = await Dog.findOne({ dogId: req.params.dogId?.trim().toUpperCase() });
+    const dog = await Dog.findOne({
+      dogId: req.params.dogId?.trim().toUpperCase(),
+    });
 
     if (!dog) {
       return res.status(404).json({ msg: "Dog not found" });
@@ -444,9 +437,21 @@ router.get("/public/:dogId", async (req, res) => {
       location: dog.location,
       notes: dog.notes,
       vaccinated: dog.vaccinated,
+      sterilized: dog.sterilized,
+      neuteringStatusLabel: dog.sterilized ? "Neutered" : "Not neutered",
       vaccinationStatus,
       vaccinationStatusLabel,
-      lookupUrl: buildLookupUrl(dog.dogId),
+      healthRecords: dog.healthRecords.map((record) => ({
+        type: record.type,
+        treatment: record.treatment || "",
+        notes: record.notes || "",
+        vaccinationDate: record.vaccinationDate || null,
+        nextDueDate: record.nextDueDate || null,
+        createdAt: record.createdAt || null,
+      })),
+      lastSeenLocation: dog.lastSeen?.placeName || dog.location || "Not available",
+      lastSeenTimestamp: dog.lastSeen?.timestamp || null,
+      lookupUrl: buildLookupUrl(),
     });
   } catch (err) {
     console.error(err);

@@ -77,6 +77,10 @@ const dogSchema = new mongoose.Schema(
       timestamp: Date,
     },
     qrCode: String,
+    qrCodeVersion: {
+      type: Number,
+      default: 2,
+    },
     healthRecords: {
       type: [healthRecordSchema],
       default: [],
